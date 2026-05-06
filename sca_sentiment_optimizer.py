@@ -35,6 +35,7 @@ Uygunluk (Fitness) Fonksiyonu:
     MSE = (1/N) * Σ (y_i - ŷ_i)²   (minimize edilir)
 """
 
+import re
 import numpy as np
 
 
@@ -318,40 +319,163 @@ class SCA_SentimentOptimizer:
 
 
 # ---------------------------------------------------------------------------
-# Test Bloğu
+# Gerçek Veri – HuggingFace Veri Seti Yükleme & Özellik Çıkarımı
 # ---------------------------------------------------------------------------
 
-def _generate_synthetic_data(
-    n_samples: int = 500,
-    n_features: int = 10,
-    random_state: int = 0,
-) -> tuple[np.ndarray, np.ndarray]:
+# Türkçe kelime listeleri (özellik çıkarımında kullanılır)
+_NEGATION_WORDS = {
+    "değil", "yok", "hayır", "olmaz", "olmadı", "etmez", "istemiyorum",
+    "istemez", "bilmez", "bilmiyorum", "hiç", "hiçbir", "hiçbiri",
+}
+_INTENSIFIERS = {
+    "çok", "aşırı", "fazla", "son derece", "kesinlikle", "tam", "gerçekten",
+    "müthiş", "inanılmaz", "fevkalade", "son", "pek", "gayet", "oldukça",
+    "epey", "bayağı", "deli gibi", "bir hayli",
+}
+_POSITIVE_WORDS = {
+    "güzel", "harika", "muhteşem", "mükemmel", "iyi", "süper", "sevdim",
+    "beğendim", "başarılı", "kaliteli", "memnun", "mutlu", "seviyorum",
+    "sevgili", "tatlı", "hoş", "şahane", "efsane", "bravo", "tebrikler",
+    "teşekkür", "teşekkürler", "sağ ol", "sağolun", "iyilik", "kusursuz",
+    "enfes", "nefis",
+}
+_NEGATIVE_WORDS = {
+    "kötü", "berbat", "rezalet", "korkunç", "iğrenç", "nefret", "sinirli",
+    "üzgün", "mutsuz", "şikayet", "sorun", "problem", "hata", "yanlış",
+    "kötüydü", "beğenmedim", "sevmedim", "şikayetçi", "dandik", "çöp",
+    "rezil", "pişman", "üzücü", "acı", "can sıkıcı", "sıkıcı",
+}
+_CONTRAST_CONJUNCTIONS = {"ama", "fakat", "lakin", "ancak", "ne var ki", "oysa", "yalnız", "bununla birlikte"}
+_ADJECTIVE_ADVERBS = {
+    "güzel", "kötü", "büyük", "küçük", "hızlı", "yavaş", "iyi", "güçlü",
+    "zayıf", "uzun", "kısa", "eski", "yeni", "açık", "kapalı", "sıcak",
+    "soğuk", "kolay", "zor", "doğru", "yanlış", "dolu", "boş", "hemen",
+    "şimdi", "çabuk", "yine", "tekrar", "sadece", "bile", "dahi",
+}
+
+
+def _extract_features(text: str) -> np.ndarray:
     """
-    10 boyutlu sentetik özellik matrisi ve ikili {-1, +1} etiketleri üret.
+    Ham Türkçe metinden 10 dilbilimsel özelliği çıkarır ve normalize eder.
 
-    Gerçek uygulama notu:
-        Gerçek veride X, her tweet için hesaplanmış 10 dilbilimsel metriği
-        (bkz. FEATURE_NAMES) içeren, önceden normalize edilmiş bir matristir.
-
-    Sentetik veri üretim mantığı:
-        - X ~ Uniform[-1, 1] ile oluşturulan özellik matrisi
-        - Gerçek ağırlıklar w_true rastgele seçilir
-        - Ham skor = X @ w_true + gürültü
-        - Etiket = sign(ham skor)  =>  {-1, +1}
+    Özellikler (FEATURE_NAMES ile aynı sırada):
+        1. Değilleme (Negation)
+        2. Yoğunlaştırıcılar (Intensifiers)
+        3. Büyük Harf Oranı
+        4. Noktalama Yoğunluğu
+        5. Kelime Çeşitliliği (TTR)
+        6. Fiil Zamanı (Tense)
+        7. Öznellik Skoru (Subjectivity)
+        8. Sıfat ve Zarf Oranı
+        9. İroni Tespiti (Irony)
+       10. Zıtlık Bağlaçları (Contrast)
     """
-    rng = np.random.default_rng(random_state)
+    if not text or not text.strip():
+        return np.zeros(10)
 
-    # Özellik matrisi: her satır bir tweet, her sütun bir dilbilimsel metrik
-    X = rng.uniform(-1.0, 1.0, size=(n_samples, n_features))
+    text_lower = text.lower()
+    tokens = re.findall(r"\w+", text_lower)
+    n_tokens = max(len(tokens), 1)
 
-    # Gizli gerçek ağırlıklar (optimizörün bulmaya çalışacağı)
-    w_true = rng.uniform(-2.0, 2.0, size=n_features)
+    # 1. Değilleme: olumsuzluk kelimesi oranı + Türkçe olumsuz ekler (-me/-ma)
+    neg_count = sum(1 for t in tokens if t in _NEGATION_WORDS)
+    neg_suffix = len(re.findall(r"\b\w+(?:me|ma|mez|maz|miyor|mıyor|muyor|müyor)\b", text_lower))
+    negation = min((neg_count + neg_suffix) / n_tokens, 1.0)
 
-    # Gürültülü skor ve ikili etiket
-    noise = rng.normal(0, 0.3, size=n_samples)
-    raw_scores = X @ w_true + noise
-    y = np.sign(raw_scores)              # {-1.0, 0.0, +1.0}
-    y = np.where(y == 0, 1.0, y)        # 0 değerleri +1'e çevir
+    # 2. Yoğunlaştırıcılar: şiddet kelimesi oranı
+    intensifier = min(sum(1 for t in tokens if t in _INTENSIFIERS) / n_tokens, 1.0)
+
+    # 3. Büyük Harf Oranı: tamamen büyük harfli kelimeler
+    raw_tokens = re.findall(r"\w+", text)
+    upper_ratio = sum(1 for t in raw_tokens if t.isupper() and len(t) > 1) / max(len(raw_tokens), 1)
+
+    # 4. Noktalama Yoğunluğu: ünlem ve soru işareti oranı
+    punct_count = text.count("!") + text.count("?")
+    punct_density = min(punct_count / max(len(text), 1) * 10, 1.0)
+
+    # 5. Kelime Çeşitliliği (TTR): benzersiz kelime / toplam kelime
+    ttr = len(set(tokens)) / n_tokens
+
+    # 6. Fiil Zamanı: geçmiş/gelecek zaman eki oranı
+    past_future = len(re.findall(
+        r"\b\w+(?:dı|di|du|dü|tı|ti|tu|tü|acak|ecek|acağ|eceğ)\b", text_lower
+    ))
+    tense = min(past_future / n_tokens, 1.0)
+
+    # 7. Öznellik Skoru: duygu kelimesi yoğunluğu
+    sentiment_words = sum(1 for t in tokens if t in _POSITIVE_WORDS or t in _NEGATIVE_WORDS)
+    subjectivity = min(sentiment_words / n_tokens, 1.0)
+
+    # 8. Sıfat ve Zarf Oranı
+    adj_adv_ratio = min(sum(1 for t in tokens if t in _ADJECTIVE_ADVERBS) / n_tokens, 1.0)
+
+    # 9. İroni Tespiti: olumlu VE olumsuz kelime eş-bulunması (normalize)
+    has_pos = any(t in _POSITIVE_WORDS for t in tokens)
+    has_neg = any(t in _NEGATIVE_WORDS for t in tokens)
+    irony = 1.0 if (has_pos and has_neg) else 0.0
+
+    # 10. Zıtlık Bağlaçları: "ama/fakat/lakin" gibi bağlaç varlığı
+    contrast = 1.0 if any(conj in text_lower for conj in _CONTRAST_CONJUNCTIONS) else 0.0
+
+    return np.array([
+        negation, intensifier, upper_ratio, punct_density, ttr,
+        tense, subjectivity, adj_adv_ratio, irony, contrast,
+    ], dtype=float)
+
+
+def _load_huggingface_dataset() -> tuple[np.ndarray, np.ndarray]:
+    """
+    HuggingFace'den Türkçe duygu analizi veri setini indir ve
+    (X, y) çiftine dönüştür.
+
+    Kaynak: winvoker/turkish-sentiment-analysis-dataset
+    Etiket dönüşümü: positive → +1, negative → -1
+    """
+    try:
+        from datasets import load_dataset  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "HuggingFace 'datasets' kütüphanesi bulunamadı. "
+            "Kurmak için: pip install datasets"
+        ) from exc
+
+    print("HuggingFace veri seti indiriliyor: winvoker/turkish-sentiment-analysis-dataset ...")
+    ds = load_dataset("winvoker/turkish-sentiment-analysis-dataset")
+
+    # train/test split'lerini birleştir (varsa)
+    splits = list(ds.keys())
+    all_texts, all_labels = [], []
+    for split in splits:
+        split_data = ds[split]
+        # Olası sütun adlarını otomatik tespit et
+        text_col = next((c for c in split_data.column_names if "text" in c.lower() or "sentence" in c.lower()), None)
+        label_col = next((c for c in split_data.column_names if "label" in c.lower() or "sentiment" in c.lower()), None)
+        if text_col is None or label_col is None:
+            raise ValueError(
+                f"Veri setindeki sütun adları tanınamadı: {split_data.column_names}. "
+                "Beklenen sütun adları 'text'/'sentence' ve 'label'/'sentiment' içermelidir."
+            )
+
+        all_texts.extend(split_data[text_col])
+        raw_labels = split_data[label_col]
+        for lbl in raw_labels:
+            lbl_str = str(lbl).lower().strip()
+            if lbl_str in ("1", "positive", "pos", "olumlu"):
+                all_labels.append(1.0)
+            elif lbl_str in ("0", "negative", "neg", "olumsuz"):
+                all_labels.append(-1.0)
+            else:
+                # Sayısal: >0 → +1, <=0 → -1
+                try:
+                    all_labels.append(1.0 if float(lbl_str) > 0 else -1.0)
+                except ValueError:
+                    print(f"  UYARI: Bilinmeyen etiket formatı '{lbl}' varsayılan olarak +1 (Olumlu) kabul edildi.")
+                    all_labels.append(1.0)
+
+    print(f"Toplam {len(all_texts)} örnek yüklendi. Özellikler çıkarılıyor...")
+
+    X = np.array([_extract_features(t) for t in all_texts], dtype=float)
+    y = np.array(all_labels, dtype=float)
 
     return X, y
 
@@ -363,24 +487,27 @@ def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  SCA Tabanlı Duygu Analizi Optimizörü – Test Çalıştırması")
+    print("  SCA Tabanlı Duygu Analizi Optimizörü – Gerçek Veri")
     print("=" * 60)
 
     # ------------------------------------------------------------------
-    # 1. Sentetik veri üret
+    # 1. Gerçek veri setini yükle ve özellikleri çıkar
     # ------------------------------------------------------------------
-    N_SAMPLES = 600
-    N_FEATURES = 10   # 10 dilbilimsel kıstas
-    TRAIN_SIZE = 480  # %80 eğitim
+    X_all, y_all = _load_huggingface_dataset()
 
-    X_all, y_all = _generate_synthetic_data(
-        n_samples=N_SAMPLES, n_features=N_FEATURES, random_state=7
-    )
+    N_SAMPLES = len(y_all)
+    TRAIN_SIZE = int(N_SAMPLES * 0.80)
+
+    # Karıştır (shuffle) ve böl
+    rng_split = np.random.default_rng(42)
+    perm = rng_split.permutation(N_SAMPLES)
+    X_all, y_all = X_all[perm], y_all[perm]
+
     X_train, y_train = X_all[:TRAIN_SIZE], y_all[:TRAIN_SIZE]
     X_test, y_test = X_all[TRAIN_SIZE:], y_all[TRAIN_SIZE:]
 
     print(f"\nVeri Boyutu  : {X_all.shape}  (eğitim: {TRAIN_SIZE}, test: {N_SAMPLES - TRAIN_SIZE})")
-    print(f"Özellik Sayısı: {N_FEATURES}")
+    print(f"Özellik Sayısı: {X_all.shape[1]}")
     print(f"Sınıf Dağılımı: Olumlu={int((y_all == 1).sum())}, "
           f"Olumsuz={int((y_all == -1).sum())}\n")
 
