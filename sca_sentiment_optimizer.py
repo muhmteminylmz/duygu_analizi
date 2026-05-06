@@ -2,6 +2,7 @@
 sca_sentiment_optimizer.py
 ==========================
 Sine-Cosine Algorithm (SCA) tabanlı Duygu Analizi Ağırlık Optimizörü
+3 Sınıflı Versiyon: Olumlu (+1), Nötr (0), Olumsuz (-1)
 
 Problem Tanımı:
     Twitter verileri üzerindeki melez duygu analizi modelinde, her tweet'ten
@@ -33,10 +34,19 @@ SCA Güncelleme Kuralları:
 
 Uygunluk (Fitness) Fonksiyonu:
     MSE = (1/N) * Σ (y_i - ŷ_i)²   (minimize edilir)
+    Hedef etiketler: -1.0, 0.0, 1.0
+
+Sınıflandırma Eşikleri (predict_class):
+    Skor >= 0.25  → Olumlu (+1)
+    Skor <= -0.25 → Olumsuz (-1)
+    -0.25 < Skor < 0.25 → Nötr (0)
 """
 
 import re
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 
 # ---------------------------------------------------------------------------
@@ -249,16 +259,23 @@ class SCA_SentimentOptimizer:
 
     def predict_class(self, X: np.ndarray) -> np.ndarray:
         """
-        Sürekli skoru {-1, 1} sınıf etiketine dönüştür.
+        Sürekli skoru {-1, 0, +1} sınıf etiketine dönüştür (3 sınıflı).
+
+        Eşik Kuralları:
+            Skor >= 0.25  → Olumlu (+1)
+            Skor <= -0.25 → Olumsuz (-1)
+            -0.25 < Skor < 0.25 → Nötr (0)
 
         Döndürür
         --------
         labels : np.ndarray, şekil (n_samples,)
-            +1 (Olumlu) veya -1 (Olumsuz) etiketleri.
+            +1 (Olumlu), 0 (Nötr) veya -1 (Olumsuz) etiketleri.
         """
         scores = self.predict(X)
-        # Skor = 0 ise olumlu (+1) kabul edilir
-        return np.where(scores >= 0, 1, -1).astype(int)
+        labels = np.zeros(len(scores), dtype=int)
+        labels[scores >= 0.25] = 1
+        labels[scores <= -0.25] = -1
+        return labels
 
     # ------------------------------------------------------------------
     # Yardımcı metodlar
@@ -308,6 +325,96 @@ class SCA_SentimentOptimizer:
             for name, w in zip(self.FEATURE_NAMES, abs_weights)
         }
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
+
+    def plot_results(
+        self,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        save_path: str | None = None,
+    ) -> None:
+        """
+        Eğitim sonuçlarını 3 farklı grafik ile görselleştirir.
+
+        Grafik 1: SCA Yakınsama Eğrisi – iterasyon bazında en iyi MSE.
+        Grafik 2: Özellik Önemi        – mutlak ağırlıkların yatay bar grafiği.
+        Grafik 3: Karmaşıklık Matrisi  – test seti için Heatmap (Olumlu/Nötr/Olumsuz).
+
+        Parametreler
+        ------------
+        X_test : np.ndarray
+            Test özellik matrisi.
+        y_test : np.ndarray
+            Gerçek test etiketleri ({-1, 0, 1}).
+        save_path : str veya None
+            Grafiklerin kaydedileceği dosya yolu (örn. "results.png").
+            None ise grafik ekranda gösterilir.
+        """
+        if self.best_weights_ is None:
+            raise RuntimeError("Model henüz eğitilmedi. Önce fit() çağırın.")
+
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        fig.suptitle("SCA Duygu Analizi – Sonuç Görselleştirmeleri", fontsize=15, fontweight="bold")
+
+        # ------------------------------------------------------------------
+        # Grafik 1: SCA Yakınsama Eğrisi
+        # ------------------------------------------------------------------
+        ax1 = axes[0]
+        ax1.plot(range(len(self.fitness_history_)), self.fitness_history_,
+                 color="steelblue", linewidth=2)
+        ax1.set_title("SCA Yakınsama Eğrisi", fontsize=13)
+        ax1.set_xlabel("İterasyon")
+        ax1.set_ylabel("En İyi MSE")
+        ax1.grid(True, linestyle="--", alpha=0.6)
+        ax1.fill_between(range(len(self.fitness_history_)), self.fitness_history_,
+                         alpha=0.15, color="steelblue")
+
+        # ------------------------------------------------------------------
+        # Grafik 2: Özellik Önemi (yatay bar grafiği, büyükten küçüğe)
+        # ------------------------------------------------------------------
+        ax2 = axes[1]
+        importance = self.feature_importance()  # zaten büyükten küçüğe sıralı
+        names = list(importance.keys())
+        values = list(importance.values())
+        colors = sns.color_palette("viridis", len(names))
+        bars = ax2.barh(names[::-1], values[::-1], color=colors)
+        ax2.set_title("Özellik Önemi (|Ağırlık|)", fontsize=13)
+        ax2.set_xlabel("|Ağırlık|")
+        ax2.grid(True, axis="x", linestyle="--", alpha=0.6)
+        # Değer etiketleri
+        for bar, val in zip(bars, values[::-1]):
+            ax2.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                     f"{val:.3f}", va="center", fontsize=8)
+
+        # ------------------------------------------------------------------
+        # Grafik 3: Karmaşıklık Matrisi (Confusion Matrix)
+        # ------------------------------------------------------------------
+        ax3 = axes[2]
+        y_pred = self.predict_class(X_test)
+        labels_order = [-1, 0, 1]
+        label_names = ["Olumsuz (-1)", "Nötr (0)", "Olumlu (+1)"]
+        cm = confusion_matrix(y_test.astype(int), y_pred, labels=labels_order)
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=label_names,
+            yticklabels=label_names,
+            ax=ax3,
+            linewidths=0.5,
+        )
+        ax3.set_title("Karmaşıklık Matrisi (Test Seti)", fontsize=13)
+        ax3.set_xlabel("Tahmin Edilen Sınıf")
+        ax3.set_ylabel("Gerçek Sınıf")
+        ax3.tick_params(axis="x", rotation=15)
+        ax3.tick_params(axis="y", rotation=0)
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"Grafikler kaydedildi: {save_path}")
+        else:
+            plt.show()
 
     def __repr__(self) -> str:
         trained = self.best_weights_ is not None
@@ -423,13 +530,16 @@ def _extract_features(text: str) -> np.ndarray:
     ], dtype=float)
 
 
-def _load_huggingface_dataset() -> tuple[np.ndarray, np.ndarray]:
+def _load_huggingface_dataset() -> tuple[np.ndarray, np.ndarray, list[str]]:
     """
     HuggingFace'den Türkçe duygu analizi veri setini indir ve
-    (X, y) çiftine dönüştür.
+    (X, y, texts) üçlüsüne dönüştür.
 
     Kaynak: winvoker/turkish-sentiment-analysis-dataset
-    Etiket dönüşümü: positive → +1, negative → -1
+    Etiket dönüşümü:
+        positive → +1.0 (Olumlu)
+        negative → -1.0 (Olumsuz)
+        notr / neutral → 0.0 (Nötr)
     """
     try:
         from datasets import load_dataset  # type: ignore
@@ -464,10 +574,19 @@ def _load_huggingface_dataset() -> tuple[np.ndarray, np.ndarray]:
                 all_labels.append(1.0)
             elif lbl_str in ("0", "negative", "neg", "olumsuz"):
                 all_labels.append(-1.0)
+            elif lbl_str in ("notr", "nötr", "neutral", "ntr"):
+                # Nötr sınıf: 0.0
+                all_labels.append(0.0)
             else:
-                # Sayısal: >0 → +1, <=0 → -1
+                # Sayısal: > 0 → +1, < 0 → -1, = 0 → 0 (nötr)
                 try:
-                    all_labels.append(1.0 if float(lbl_str) > 0 else -1.0)
+                    val = float(lbl_str)
+                    if val > 0:
+                        all_labels.append(1.0)
+                    elif val < 0:
+                        all_labels.append(-1.0)
+                    else:
+                        all_labels.append(0.0)
                 except ValueError:
                     print(f"  UYARI: Bilinmeyen etiket formatı '{lbl}' varsayılan olarak +1 (Olumlu) kabul edildi.")
                     all_labels.append(1.0)
@@ -477,23 +596,28 @@ def _load_huggingface_dataset() -> tuple[np.ndarray, np.ndarray]:
     X = np.array([_extract_features(t) for t in all_texts], dtype=float)
     y = np.array(all_labels, dtype=float)
 
-    return X, y
+    return X, y, all_texts
 
 
 def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """İkili sınıflandırma doğruluğu."""
+    """3 sınıflı sınıflandırma doğruluğu."""
     return float(np.mean(y_true == y_pred))
+
+
+def _label_name(label: int) -> str:
+    """Sayısal etiketi Türkçe sınıf adına çevirir."""
+    return {1: "Olumlu", 0: "Nötr", -1: "Olumsuz"}.get(label, str(label))
 
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  SCA Tabanlı Duygu Analizi Optimizörü – Gerçek Veri")
+    print("  SCA Tabanlı 3-Sınıflı Duygu Analizi Optimizörü – Gerçek Veri")
     print("=" * 60)
 
     # ------------------------------------------------------------------
     # 1. Gerçek veri setini yükle ve özellikleri çıkar
     # ------------------------------------------------------------------
-    X_all, y_all = _load_huggingface_dataset()
+    X_all, y_all, texts_all = _load_huggingface_dataset()
 
     N_SAMPLES = len(y_all)
     TRAIN_SIZE = int(N_SAMPLES * 0.80)
@@ -502,14 +626,19 @@ if __name__ == "__main__":
     rng_split = np.random.default_rng(42)
     perm = rng_split.permutation(N_SAMPLES)
     X_all, y_all = X_all[perm], y_all[perm]
+    texts_all = [texts_all[i] for i in perm]
 
     X_train, y_train = X_all[:TRAIN_SIZE], y_all[:TRAIN_SIZE]
     X_test, y_test = X_all[TRAIN_SIZE:], y_all[TRAIN_SIZE:]
+    texts_test = texts_all[TRAIN_SIZE:]
 
     print(f"\nVeri Boyutu  : {X_all.shape}  (eğitim: {TRAIN_SIZE}, test: {N_SAMPLES - TRAIN_SIZE})")
     print(f"Özellik Sayısı: {X_all.shape[1]}")
-    print(f"Sınıf Dağılımı: Olumlu={int((y_all == 1).sum())}, "
-          f"Olumsuz={int((y_all == -1).sum())}\n")
+    print(
+        f"Sınıf Dağılımı: Olumlu={int((y_all == 1).sum())}, "
+        f"Nötr={int((y_all == 0).sum())}, "
+        f"Olumsuz={int((y_all == -1).sum())}\n"
+    )
 
     # ------------------------------------------------------------------
     # 2. Modeli eğit
@@ -555,6 +684,55 @@ if __name__ == "__main__":
     for name, imp in model.feature_importance().items():
         bar = "█" * int(imp * 10)
         print(f"  {name:<38}: {imp:.4f}  {bar}")
+
+    # ------------------------------------------------------------------
+    # 5. Görselleştirme (3 grafik)
+    # ------------------------------------------------------------------
+    print("\nGrafikler oluşturuluyor...")
+    model.plot_results(X_test, y_test)
+
+    # ------------------------------------------------------------------
+    # 6. Gerçek Örnekler Üzerinde Demo (10 örnek)
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("  Demo: Rastgele 10 Örnek Üzerinde Model Performansı")
+    print("=" * 60)
+
+    # Test setinden rastgele 10 örnek seç
+    rng_demo = np.random.default_rng(0)
+    demo_idx = rng_demo.choice(len(texts_test), size=min(10, len(texts_test)), replace=False)
+
+    demo_texts = [texts_test[i] for i in demo_idx]
+    demo_X = X_test[demo_idx]
+    demo_y_true = y_test[demo_idx].astype(int)
+    demo_scores = model.predict(demo_X)
+    demo_y_pred = model.predict_class(demo_X)
+
+    # Tablo başlığı
+    col_text = 52
+    col_gercek = 14
+    col_tahmin = 20
+    col_skor = 14
+    sep = "-" * (col_text + col_gercek + col_tahmin + col_skor + 5)
+    header = (
+        f"{'Metin (ilk 50 karakter)':<{col_text}} "
+        f"{'Gerçek Sınıf':<{col_gercek}} "
+        f"{'Tahmin Edilen Sınıf':<{col_tahmin}} "
+        f"{'Ham Skor (SCA)':<{col_skor}}"
+    )
+    print(header)
+    print(sep)
+    for text, true_lbl, pred_lbl, score in zip(demo_texts, demo_y_true, demo_y_pred, demo_scores):
+        text_short = (text[:49] + "…") if len(text) > 50 else text
+        true_name = _label_name(int(true_lbl))
+        pred_name = _label_name(int(pred_lbl))
+        print(
+            f"{text_short:<{col_text}} "
+            f"{true_name:<{col_gercek}} "
+            f"{pred_name:<{col_tahmin}} "
+            f"{score:+.4f}"
+        )
+    print(sep)
 
     print("\n" + "=" * 60)
     print("Test tamamlandı.")
