@@ -668,10 +668,11 @@ if __name__ == "__main__":
 
     print("\n" + "-" * 60)
     print("Eğitim Sonuçları:")
-    print(f"  Eğitim MSE      : {train_mse:.6f}")
-    print(f"  Test     MSE    : {test_mse:.6f}")
+    print(f"  Eğitim Skor MSE : {train_mse:.6f}")
+    print(f"  Test   Skor MSE : {test_mse:.6f}")
     print(f"  Eğitim Doğruluğu: {train_acc * 100:.2f}%")
     print(f"  Test  Doğruluğu : {test_acc * 100:.2f}%")
+    print("  Not: Sınıflar eşikleme ile üretilir; optimizasyonda sürekli skor için MSE minimize edilir.")
 
     # ------------------------------------------------------------------
     # 4. Optimize edilmiş ağırlıklar ve özellik önemi
@@ -709,13 +710,13 @@ if __name__ == "__main__":
     demo_y_pred = model.predict_class(demo_X)
 
     # Tablo başlığı
-    col_text = 52
+    col_text = max(len("Metin"), max((len(t) for t in demo_texts), default=0)) + 2
     col_gercek = 14
     col_tahmin = 20
     col_skor = 14
     sep = "-" * (col_text + col_gercek + col_tahmin + col_skor + 5)
     header = (
-        f"{'Metin (ilk 50 karakter)':<{col_text}} "
+        f"{'Metin':<{col_text}} "
         f"{'Gerçek Sınıf':<{col_gercek}} "
         f"{'Tahmin Edilen Sınıf':<{col_tahmin}} "
         f"{'Ham Skor (SCA)':<{col_skor}}"
@@ -723,11 +724,11 @@ if __name__ == "__main__":
     print(header)
     print(sep)
     for text, true_lbl, pred_lbl, score in zip(demo_texts, demo_y_true, demo_y_pred, demo_scores):
-        text_short = (text[:49] + "…") if len(text) > 50 else text
+        text_full = text
         true_name = _label_name(int(true_lbl))
         pred_name = _label_name(int(pred_lbl))
         print(
-            f"{text_short:<{col_text}} "
+            f"{text_full:<{col_text}} "
             f"{true_name:<{col_gercek}} "
             f"{pred_name:<{col_tahmin}} "
             f"{score:+.4f}"
