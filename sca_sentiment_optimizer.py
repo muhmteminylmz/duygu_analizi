@@ -710,7 +710,7 @@ if __name__ == "__main__":
     demo_y_pred = model.predict_class(demo_X)
 
     # Tablo başlığı
-    max_text_len = max((len(t) for t in demo_texts), default=0)
+    max_text_len = max([len(t) for t in demo_texts], default=0)
     col_text = max(len("Metin"), max_text_len) + 2
     col_gercek = 14
     col_tahmin = 20
